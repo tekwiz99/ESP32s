@@ -19,7 +19,7 @@ const char* baseFirmwareUrl = "https://github.com/tekwiz99/ESP32s/";  // bin 檔
 
 // ====== 儲存版本號 (NVS) ======
 Preferences preferences;
-String currentVersion = "1.1.1";  // 預設版本
+String currentVersion = "v1.0.1";  // 預設版本
 
 WebServer server(80);
 
@@ -242,4 +242,5 @@ void loop(void) {
   server.handleClient();
   
 }
+
 
