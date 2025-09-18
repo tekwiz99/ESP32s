@@ -14,8 +14,8 @@ const char* ssid = "你的熱點名稱";
 const char* password = "你的熱點密碼";
 
 // ====== GitHub OTA URL (你的 GitHub Pages) ======
-const char* versionUrl  = "你的專案網址/version.json";
-const char* baseFirmwareUrl = "你的專案網址";  // bin 檔會接在這後面
+const char* versionUrl  = "https://github.com/tekwiz99/ESP32s/version.json";
+const char* baseFirmwareUrl = "https://github.com/tekwiz99/ESP32s/";  // bin 檔會接在這後面
 
 // ====== 儲存版本號 (NVS) ======
 Preferences preferences;
@@ -242,3 +242,4 @@ void loop(void) {
   server.handleClient();
   
 }
+
