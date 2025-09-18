@@ -1,0 +1,244 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <WebServer.h>
+#include <ESPmDNS.h>
+#include <Update.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <ArduinoJson.h>  //安裝函式庫
+#include <Preferences.h>
+
+// ====== WiFi 設定 ======
+const char* host = "esp32";
+const char* ssid = "你的熱點名稱";
+const char* password = "你的熱點密碼";
+
+// ====== GitHub OTA URL (你的 GitHub Pages) ======
+const char* versionUrl  = "你的專案網址/version.json";
+const char* baseFirmwareUrl = "你的專案網址";  // bin 檔會接在這後面
+
+// ====== 儲存版本號 (NVS) ======
+Preferences preferences;
+String currentVersion = "1.1.1";  // 預設版本
+
+WebServer server(80);
+
+// ====== Login Page ======
+const char* loginIndex = R"rawliteral(
+<form name='loginForm'>
+    <table width='20%' bgcolor='A09F9F' align='center'>
+        <tr>
+            <td colspan=2>
+                <center><font size=4><b>ESP32 Login Page</b></font></center>
+                <br>
+            </td>
+        </tr>
+        <tr>
+             <td>Username:</td>
+             <td><input type='text' size=25 name='userid'><br></td>
+        </tr>
+        <tr>
+            <td>Password:</td>
+            <td><input type='Password' size=25 name='pwd'><br></td>
+        </tr>
+        <tr>
+            <td><input type='submit' onclick='check(this.form)' value='Login'></td>
+        </tr>
+    </table>
+</form>
+<script>
+function check(form) {
+    if(form.userid.value=='admin' && form.pwd.value=='admin') {
+        window.open('/serverIndex')
+    } else {
+        alert('Error Password or Username')
+    }
+}
+</script>
+)rawliteral";
+
+// ====== Server Index Page ======
+const char* serverIndex = R"rawliteral(
+<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>
+<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>
+   <input type='file' name='update'>
+   <input type='submit' value='Update'>
+</form>
+<div id='prg'>progress: 0%</div>
+<script>
+  $('form').submit(function(e){
+    e.preventDefault();
+    var form = $('#upload_form')[0];
+    var data = new FormData(form);
+    $.ajax({
+      url: '/update',
+      type: 'POST',
+      data: data,
+      contentType: false,
+      processData:false,
+      xhr: function() {
+        var xhr = new window.XMLHttpRequest();
+        xhr.upload.addEventListener('progress', function(evt) {
+          if (evt.lengthComputable) {
+            var per = evt.loaded / evt.total;
+            $('#prg').html('progress: ' + Math.round(per*100) + '%');
+          }
+        }, false);
+        return xhr;
+      },
+      success:function(d, s) {
+        console.log('success!')
+      },
+      error: function (a, b, c) {}
+    });
+  });
+</script>
+)rawliteral";
+
+// ====== GitHub OTA 更新 ======
+void performGitHubUpdate(const String& binFile, const String& newVersion) {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  String fullUrl = String(baseFirmwareUrl) + binFile;
+  Serial.println("Downloading new firmware from: " + fullUrl);
+
+  t_httpUpdate_return ret = httpUpdate.update(client, fullUrl);
+
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("Update failed. Error (%d): %s\n", 
+                    httpUpdate.getLastError(), 
+                    httpUpdate.getLastErrorString().c_str());
+      break;
+
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("No updates available.");
+      break;
+
+    case HTTP_UPDATE_OK:
+      Serial.println("Update successful. Rebooting...");
+      // 更新成功 → 存新的版本號
+      preferences.begin("ota", false);
+      preferences.putString("version", newVersion);
+      preferences.end();
+      break;
+  }
+}
+
+// ====== 檢查 GitHub 版本 ======
+void checkForUpdate() {
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  Serial.println("Checking version from GitHub...");
+
+  if (http.begin(client, versionUrl)) {
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      Serial.println("Version file: " + payload);
+
+      // 解析 JSON
+      DynamicJsonDocument doc(512);
+      DeserializationError error = deserializeJson(doc, payload);
+      if (!error) {
+        String latestVersion = doc["latest"].as<String>();
+        String binFile = doc["bin"].as<String>();
+
+        Serial.printf("Current: %s | Latest: %s | Bin: %s\n", 
+                      currentVersion.c_str(), latestVersion.c_str(), binFile.c_str());
+
+        if (currentVersion != latestVersion) {
+          Serial.println("New firmware available! Updating...");
+          performGitHubUpdate(binFile, latestVersion);
+        } else {
+          Serial.println("Already up-to-date.");
+        }
+      } else {
+        Serial.println("JSON parse failed!");
+      }
+    } else {
+      Serial.printf("Failed to fetch version file. HTTP code: %d\n", httpCode);
+    }
+    http.end();
+  } else {
+    Serial.println("Unable to connect to GitHub.");
+  }
+}
+
+// ====== Setup ======
+void setup(void) {
+  Serial.begin(115200);
+
+  // WiFi 連線
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected.");
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+
+  // 讀取上次存的版本
+  preferences.begin("ota", false);
+  currentVersion = preferences.getString("version", "0.0.0");
+  preferences.end();
+  Serial.println("Stored firmware version: " + currentVersion);
+
+  // mDNS
+  if (!MDNS.begin(host)) { 
+    Serial.println("Error setting up MDNS responder!");
+    while (1) { delay(1000); }
+  }
+  Serial.println("mDNS responder started");
+
+  // OTA 路由
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/html", loginIndex);
+  });
+  server.on("/serverIndex", HTTP_GET, []() {
+    server.send(200, "text/html", serverIndex);
+  });
+
+  // 手動 OTA
+  server.on("/update", HTTP_POST, []() {
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+        Update.printError(Serial);
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+
+  // GitHub OTA 手動觸發
+  server.on("/githubUpdate", HTTP_GET, []() {
+    server.send(200, "text/plain", "Starting GitHub OTA update...");
+    checkForUpdate();
+  });
+
+  server.begin();
+  Serial.println("HTTP server started");
+
+  // ====== 開機時自動檢查更新 ======
+  checkForUpdate();
+}
+
+// ====== Loop ======
+void loop(void) {
+  server.handleClient();
+  
+}
